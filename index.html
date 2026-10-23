@@ -47,6 +47,20 @@
         input::-webkit-calendar-picker-indicator {
             display: none !important;
         }
+
+        /* iOS-style time wheels */
+        .wheel-scroll {
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+            scroll-snap-type: y mandatory;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+        }
+        .wheel-scroll::-webkit-scrollbar { display: none; }
+        .wheel-fade {
+            -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent);
+            mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent);
+        }
     </style>
     <script>
         tailwind.config = {
@@ -68,7 +82,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+        const { useState, useEffect, useMemo, useRef } = React;
 
         /* =============================================================
          * 1. Configuration
@@ -95,21 +109,6 @@
         };
 
         const ALL_POINTS = Object.values(FIXED_LOCATIONS).flat();
-
-        // Alorica locations worldwide, ordered by time zone offset.
-        const TIMEZONES = [
-            { value: 'GMT+2', label: 'Egypt (GMT+2)' },
-            { value: 'GMT-8', label: 'Pacific (UTC-8 / -7)' },
-            { value: 'GMT-7', label: 'Mountain (UTC-7 / -6)' },
-            { value: 'GMT-6', label: 'Central (UTC-6 / -5)' },
-            { value: 'GMT-5', label: 'Eastern (UTC-5 / -4)' },
-            { value: 'GMT-4', label: 'Atlantic (UTC-4)' },
-            { value: 'GMT-3', label: 'Uruguay Time (UTC-3)' },
-            { value: 'GMT+1', label: 'Central European (UTC+1 / +2)' },
-            { value: 'GMT+5:30', label: 'India (UTC+5:30)' },
-            { value: 'GMT+8', label: 'Philippine / China (UTC+8)' },
-            { value: 'GMT+9', label: 'Japan (UTC+9)' }
-        ];
 
         // Default fleet — the admin can add / remove buses and change capacities.
         const DEFAULT_BUSES = [
@@ -157,28 +156,29 @@
             return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
         };
 
-        const getOffsetHours = (tz) => {
-            if (!tz) return -(new Date().getTimezoneOffset() / 60);
-            // Supports whole hours (GMT-8) and half-hour zones (GMT+5:30).
-            const m = String(tz).match(/GMT\s*([+-]\d+)(?::(\d+))?/);
-            if (!m) return 0;
-            const sign = m[1].charAt(0) === '-' ? -1 : 1;
-            const hours = Math.abs(parseInt(m[1], 10));
-            const minutes = m[2] ? parseInt(m[2], 10) : 0;
-            return sign * (hours + minutes / 60);
+        const to12h = (t24) => {
+            if (!t24) return { hh: '', mm: '', ampm: 'AM' };
+            const [h24, mm] = t24.split(':');
+            const h = parseInt(h24, 10);
+            return { hh: pad(h % 12 || 12), mm, ampm: h >= 12 ? 'PM' : 'AM' };
         };
 
-        const formatClock = (date, offset) => {
-            const z = new Date(date.getTime() + offset * 3600000);
-            return {
-                hh: pad(z.getUTCHours()),
-                mm: pad(z.getUTCMinutes()),
-                ss: pad(z.getUTCSeconds())
-            };
+        const to24h = (hh, mm, ampm) => {
+            let h = parseInt(hh, 10);
+            if (ampm === 'PM' && h < 12) h += 12;
+            if (ampm === 'AM' && h === 12) h = 0;
+            return `${pad(h)}:${mm}`;
         };
 
-        const HOURS = Array.from({ length: 24 }, (_, i) => pad(i));
+        const formatTime12h = (t24) => {
+            const { hh, mm, ampm } = to12h(t24);
+            return hh ? `${hh}:${mm} ${ampm}` : '';
+        };
+
+        // iOS wheel order: hours start at 12, then 1 → 11.
+        const HOURS = ['12', ...Array.from({ length: 11 }, (_, i) => pad(i + 1))];
         const MINUTES = Array.from({ length: 60 }, (_, i) => pad(i));
+        const AMPM = ['AM', 'PM'];
 
         const esc = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -491,6 +491,865 @@
             );
         };
 
+        /* iOS-style scroll wheel: one column of a drum picker. */
+        const WHEEL_ITEM_HEIGHT = 44;
+        const WHEEL_HEIGHT = 220;
+
+        const TimeWheel = ({ items, value, onSelect, label }) => {
+            const scrollRef = useRef(null);
+            const lastValueRef = useRef(null);
+            const index = Math.max(0, items.indexOf(value));
+
+            // Re-align the drum whenever the value changes from the outside
+            // (first render, form reset, or a sibling wheel updating the time).
+            useEffect(() => {
+                const el = scrollRef.current;
+                if (!el || lastValueRef.current === value) return;
+                lastValueRef.current = value;
+                el.scrollTop = index * WHEEL_ITEM_HEIGHT;
+            }, [value, index]);
+
+            const handleScroll = () => {
+                const el = scrollRef.current;
+                if (!el) return;
+                const i = Math.max(0, Math.min(items.length - 1, Math.round(el.scrollTop / WHEEL_ITEM_HEIGHT)));
+                if (items[i] !== value) {
+                    lastValueRef.current = items[i];
+                    onSelect(items[i]);
+                }
+            };
+
+            const pad = (WHEEL_HEIGHT - WHEEL_ITEM_HEIGHT) / 2;
+
+            return (
+                <div className="relative flex-1" aria-label={label}>
+                    <div
+                        ref={scrollRef}
+                        onScroll={handleScroll}
+                        className="wheel-scroll wheel-fade overflow-y-scroll"
+                        style={{ height: WHEEL_HEIGHT }}
+                    >
+                        <div style={{ height: pad }} />
+                        {items.map((item) => (
+                            <div
+                                key={item}
+                                className={`snap-center flex items-center justify-center tabular-nums font-bold transition-all duration-200 ${
+                                    item === value ? 'text-3xl text-alorica-blue' : 'text-xl text-gray-400'
+                                }`}
+                                style={{ height: WHEEL_ITEM_HEIGHT }}
+                            >
+                                {item}
+                            </div>
+                        ))}
+                        <div style={{ height: pad }} />
+                    </div>
+                </div>
+            );
+        };
+
+        /* =============================================================
+         * 7. Screens
+         * ============================================================= */
+
+        const Login = ({ toasts, loginData, setLoginData, error, onSubmit }) => (
+            <>
+                <Toasts toasts={toasts} />
+                <div className="min-h-screen flex items-center justify-center p-4">
+                    <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100 fade-in">
+                        <div className="flex flex-col items-center mb-8">
+                            <img src="logo.png" alt="Alorica" className="h-12 mb-4" />
+                            <h1 className="text-2xl font-bold text-alorica-blue">Login</h1>
+                            <p className="text-gray-500 text-sm mt-2 text-center">Alorica Booking System</p>
+                        </div>
+
+                        <form onSubmit={onSubmit} className="space-y-6">
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        required
+                                        autoComplete="username"
+                                        className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg outline-none transition-all text-gray-800 pl-10"
+                                        placeholder="Enter your username"
+                                        value={loginData.username}
+                                        onChange={(e) => setLoginData({ ...loginData, username: e.target.value })}
+                                    />
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                                        <Icon name="user" size={18} />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                                <div className="relative">
+                                    <input
+                                        type="password"
+                                        required
+                                        autoComplete="current-password"
+                                        className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg outline-none transition-all text-gray-800 pl-10"
+                                        placeholder="Enter your password"
+                                        value={loginData.password}
+                                        onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
+                                    />
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                                        <Icon name="lock" size={18} />
+                                    </div>
+                                </div>
+                            </div>
+
+                            {error && (
+                                <p className="text-red-500 text-sm text-center font-medium bg-red-50 py-2 rounded-lg">{error}</p>
+                            )}
+
+                            <button
+                                type="submit"
+                                className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-3 px-4 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all"
+                            >
+                                Login
+                                <Icon name="chevron-right" size={20} />
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </>
+        );
+
+        const BookingForm = ({
+            activeTab, setActiveTab,
+            formData, setFormData,
+            selectedRoad, setSelectedRoad,
+            locating, onLocate, onSubmit,
+            dropOffLabel, dropOffIcon, timeLabel
+        }) => {
+            const { hh: selHour, mm: selMinute, ampm: selAmpm } = to12h(formData.time);
+            const [displayHh, displayMm] = formData.time.split(':');
+            const timeIsSet = Boolean(formData.time);
+
+            return (
+            <>
+                <div className="bg-alorica-blue p-6 sm:p-8 text-white text-center">
+                    <h2 className="text-2xl sm:text-3xl font-bold mb-2">Transportation</h2>
+                    <p className="opacity-80">Select Arrival or Departure to complete your booking</p>
+                </div>
+
+                <div className="flex justify-center gap-3 sm:gap-4 pt-6 px-4">
+                    <button
+                        type="button"
+                        onClick={() => setActiveTab('arrival')}
+                        className={`flex items-center gap-2 px-8 sm:px-12 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
+                            activeTab === 'arrival'
+                                ? 'bg-green-600 text-white shadow-lg scale-105'
+                                : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
+                        }`}
+                    >
+                        <Icon name="bus" size={18} /> Arrival
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => setActiveTab('departure')}
+                        className={`flex items-center gap-2 px-8 sm:px-12 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
+                            activeTab === 'departure'
+                                ? 'bg-red-600 text-white shadow-lg scale-105'
+                                : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
+                        }`}
+                    >
+                        <Icon name="bus" size={18} /> Departure
+                    </button>
+                </div>
+
+                <form key={activeTab} onSubmit={onSubmit} className="p-4 sm:p-8 fade-in">
+                    <div className="max-w-2xl mx-auto space-y-6">
+                        <div>
+                            <label className="flex flex-wrap items-center justify-between text-alorica-blue font-bold mb-2 gap-2">
+                                <span className="flex items-center gap-2"><Icon name={dropOffIcon} size={18} className="text-alorica-orange" /> {dropOffLabel}</span>
+                                <button
+                                    type="button"
+                                    onClick={() => onLocate('dropOffLocation')}
+                                    className="text-[10px] sm:text-xs bg-alorica-light text-alorica-blue px-2 py-1 rounded hover:bg-blue-100 transition-colors flex items-center gap-1 shrink-0"
+                                >
+                                    <Icon name="locate" size={12} /> My Location
+                                </button>
+                            </label>
+
+                            {/* Road Selection Buttons */}
+                            <div className="grid grid-cols-3 sm:grid-cols-9 gap-2 mb-3">
+                                {Object.keys(FIXED_LOCATIONS).map((road) => (
+                                    <button
+                                        key={road}
+                                        type="button"
+                                        onClick={() => setSelectedRoad(road)}
+                                        className={`py-2 text-xs font-bold rounded-lg border-2 transition-all ${
+                                            selectedRoad === road
+                                                ? 'bg-alorica-orange text-white border-alorica-orange'
+                                                : 'bg-white text-alorica-blue border-gray-100 hover:border-alorica-light'
+                                        }`}
+                                    >
+                                        {road}
+                                    </button>
+                                ))}
+                            </div>
+
+                            {/* Sub-location Selection (Visible only when a road is selected) */}
+                            {selectedRoad && (
+                                <div className="flex flex-wrap gap-2 mb-3 p-3 bg-gray-50 rounded-xl border-2 border-gray-100 max-h-48 overflow-y-auto">
+                                    {FIXED_LOCATIONS[selectedRoad].map((point) => (
+                                        <button
+                                            key={point}
+                                            type="button"
+                                            onClick={() => setFormData({ ...formData, dropOffLocation: point })}
+                                            className={`px-3 py-1.5 text-[11px] font-semibold rounded-full border transition-all ${
+                                                formData.dropOffLocation === point
+                                                    ? 'bg-alorica-blue text-white border-alorica-blue'
+                                                    : 'bg-white text-gray-600 border-gray-200 hover:border-alorica-blue hover:text-alorica-blue'
+                                            }`}
+                                        >
+                                            {point}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+
+                            <input
+                                list="fixed-locations"
+                                required
+                                placeholder={`Select or enter ${dropOffLabel.toLowerCase()}`}
+                                className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-gray-50 text-sm sm:text-base"
+                                value={formData.dropOffLocation}
+                                onChange={(e) => setFormData({ ...formData, dropOffLocation: e.target.value })}
+                            />
+                        </div>
+
+                        <div>
+                            <label className="flex items-center gap-2 text-alorica-blue font-bold mb-2">
+                                <Icon name="clock" size={18} className="text-alorica-orange" /> {timeLabel}
+                            </label>
+                            <div className="rounded-3xl border border-gray-100 bg-white shadow-xl p-4 sm:p-6">
+                                <div className="rounded-2xl bg-gradient-to-br from-alorica-blue via-[#0a4f7d] to-[#002b4a] px-4 py-5 shadow-lg">
+                                    <div className="flex items-baseline justify-center gap-1 text-white select-none">
+                                        <span className="text-5xl sm:text-6xl font-black tabular-nums tracking-tight">{displayHh || '--'}</span>
+                                        <span className={`text-4xl sm:text-5xl font-black text-alorica-orange -mt-1 ${timeIsSet ? 'animate-pulse' : 'opacity-40'}`}>:</span>
+                                        <span className="text-5xl sm:text-6xl font-black tabular-nums tracking-tight">{displayMm || '--'}</span>
+                                        <span className="ml-2 text-[11px] font-black tracking-widest px-2.5 py-1.5 rounded-lg bg-white/15">{selAmpm}</span>
+                                    </div>
+                                    <p className="text-center text-[11px] text-white/60 mt-2">
+                                        {timeIsSet ? `Selected ${formatTime12h(formData.time)}` : 'Scroll the wheels to set your time'}
+                                    </p>
+                                </div>
+
+                                <div className="relative mt-4 max-w-xs mx-auto">
+                                    <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 h-11 rounded-xl bg-alorica-light/60 ring-1 ring-inset ring-alorica-orange/25 z-10" />
+                                    <div className="relative flex">
+                                        <TimeWheel
+                                            label="Hour"
+                                            items={HOURS}
+                                            value={selHour || '12'}
+                                            onSelect={(hh) => setFormData({ ...formData, time: to24h(hh, selMinute || '00', selAmpm) })}
+                                        />
+                                        <TimeWheel
+                                            label="Minute"
+                                            items={MINUTES}
+                                            value={selMinute || '00'}
+                                            onSelect={(mm) => setFormData({ ...formData, time: to24h(selHour || '12', mm, selAmpm) })}
+                                        />
+                                        <TimeWheel
+                                            label="AM or PM"
+                                            items={AMPM}
+                                            value={selAmpm}
+                                            onSelect={(ampm) => setFormData({ ...formData, time: to24h(selHour || '12', selMinute || '00', ampm) })}
+                                        />
+                                    </div>
+                                </div>
+
+                                <p className="text-center text-[11px] text-gray-400 mt-3">Swipe or scroll each wheel — it snaps into place</p>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="flex items-center gap-2 text-alorica-blue font-bold mb-2">
+                                <Icon name="calendar" size={18} className="text-alorica-orange" /> Calendar
+                            </label>
+                            <input
+                                type="date"
+                                required
+                                min={todayISO()}
+                                className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-gray-50"
+                                value={formData.date}
+                                onChange={(e) => setFormData({ ...formData, date: e.target.value })}
+                            />
+                        </div>
+
+                        <datalist id="fixed-locations">
+                            {ALL_POINTS.map((loc, index) => (
+                                <option key={index} value={loc} />
+                            ))}
+                        </datalist>
+
+                        <div className="pt-2">
+                            <button
+                                type="submit"
+                                disabled={locating}
+                                className={`w-full bg-alorica-orange hover:shadow-2xl text-white font-black text-xl py-5 rounded-2xl shadow-xl transform active:scale-[0.98] transition-all flex items-center justify-center gap-3 group ${locating ? 'opacity-70 cursor-wait' : ''}`}
+                            >
+                                {locating ? 'Detecting Location...' : 'Book now'}
+                                <Icon name="chevron-right" size={24} className="group-hover:translate-x-2 transition-transform" />
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </>
+            );
+        };
+
+        const MyBookings = ({ bookings, onDelete }) => (
+            <div className="p-4 sm:p-8 border-t border-gray-100 bg-gray-50/50">
+                <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-xl mb-6">
+                    <Icon name="calendar-check" size={24} className="text-alorica-orange" /> My Bookings
+                </h3>
+
+                {bookings.length === 0 ? (
+                    <div className="text-center py-10 bg-white rounded-2xl border-2 border-dashed border-gray-200">
+                        <Icon name="calendar" size={48} className="mx-auto text-gray-300 mb-3" />
+                        <p className="text-gray-500 font-medium">You have no bookings yet.</p>
+                    </div>
+                ) : (
+                    <div className="space-y-4">
+                        {bookings.map((b) => (
+                            <div key={b.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-wrap items-center justify-between gap-4">
+                                <div className="flex items-center gap-4">
+                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${b.type === 'Arrival' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
+                                        <Icon name="bus" size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-alorica-blue">{b.date} at {formatTime12h(b.time)}</p>
+                                        <p className="text-xs text-gray-500 flex items-center gap-1">
+                                            <Icon name="map-pin" size={12} /> {b.location}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-6">
+                                    <div className="text-right">
+                                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bus</p>
+                                        <p className={`font-bold ${b.bus === WAITLIST ? 'text-red-600' : 'text-alorica-orange'}`}>{b.bus}</p>
+                                    </div>
+                                    <button
+                                        onClick={() => onDelete(b.id)}
+                                        className="p-3 hover:bg-red-50 rounded-xl text-red-500 transition-colors border border-transparent hover:border-red-100"
+                                        title="Delete booking"
+                                    >
+                                        <Icon name="trash-2" size={20} />
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+
+        const AdminDashboard = ({
+            adminView, setAdminView, adminTabs,
+            bookings, filteredBookings, dayGroups, waitlistCount,
+            filters, setFilters, filtersActive, resetFilters,
+            onRedistribute, onSaveExcel, onShare, onPrint, sharing, summaryText, pushToast,
+            busNames, onSetBus, onDeleteBooking,
+            buses, newBus, setNewBus, busFeedback, setBusFeedback,
+            onAddBus, onDeleteBus, onUpdateCapacity, busUsage,
+            newUser, setNewUser, userFeedback, setUserFeedback, onCreateUser, allUsers,
+            importing, setImporting, onExportBackup, onImportBackup
+        }) => (
+            <div className="bg-white rounded-3xl shadow-2xl overflow-hidden border border-white">
+                <div className="bg-alorica-blue p-6 sm:p-8 text-white text-center">
+                    <h2 className="text-2xl sm:text-3xl font-bold mb-2">Admin Dashboard</h2>
+                    <p className="opacity-80">Manage employee bookings, the bus fleet and user accounts</p>
+                </div>
+
+                <div className="flex flex-wrap justify-center gap-3 pt-6 px-4">
+                    {adminTabs.map((tab) => (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setAdminView(tab.key)}
+                            className={`flex items-center gap-2 px-5 sm:px-8 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
+                                adminView === tab.key
+                                    ? 'bg-alorica-orange text-white shadow-lg scale-105'
+                                    : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
+                            }`}
+                        >
+                            <Icon name={tab.icon} size={18} /> {tab.label}
+                        </button>
+                    ))}
+                </div>
+
+                <div className="p-4 sm:p-8">
+
+                {/* ================= BOOKINGS ================= */}
+                {adminView === 'bookings' && (
+                    <>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8 max-w-4xl mx-auto">
+                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                            <p className="text-3xl font-black text-alorica-blue">{filteredBookings.length}</p>
+                            <p className="text-xs text-gray-500 mt-1">Bookings</p>
+                        </div>
+                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                            <p className="text-3xl font-black text-alorica-blue">{dayGroups.length}</p>
+                            <p className="text-xs text-gray-500 mt-1">Days</p>
+                        </div>
+                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                            <p className="text-3xl font-black text-alorica-blue">{uniqueEmployeeCount(filteredBookings)}</p>
+                            <p className="text-xs text-gray-500 mt-1">Employees</p>
+                        </div>
+                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                            <p className={`text-3xl font-black ${waitlistCount ? 'text-red-600' : 'text-alorica-blue'}`}>{waitlistCount}</p>
+                            <p className="text-xs text-gray-500 mt-1">On waitlist</p>
+                        </div>
+                    </div>
+
+                    {/* Filters */}
+                    <div className="max-w-4xl mx-auto mb-6 bg-gray-50 border border-gray-100 rounded-2xl p-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                            <div className="sm:col-span-2">
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">Search</label>
+                                <div className="relative">
+                                    <input
+                                        className="w-full px-4 py-3 pl-10 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                        placeholder="Name, ID, point, bus..."
+                                        value={filters.q}
+                                        onChange={(e) => setFilters({ ...filters, q: e.target.value })}
+                                    />
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                                        <Icon name="search" size={16} />
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">From date</label>
+                                <input
+                                    type="date"
+                                    className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                    value={filters.from}
+                                    onChange={(e) => setFilters({ ...filters, from: e.target.value })}
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-gray-600 mb-1">To date</label>
+                                <input
+                                    type="date"
+                                    className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                    value={filters.to}
+                                    onChange={(e) => setFilters({ ...filters, to: e.target.value })}
+                                />
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
+                            <p className="text-xs text-gray-500">
+                                Showing <span className="font-bold text-alorica-blue">{filteredBookings.length}</span> of {bookings.length} bookings{filtersActive ? ' (filters applied)' : ''}. Exports use this selection.
+                            </p>
+                            <div className="flex gap-2">
+                                {filtersActive && (
+                                    <button
+                                        type="button"
+                                        onClick={resetFilters}
+                                        className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
+                                    >
+                                        Clear filters
+                                    </button>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={onRedistribute}
+                                    className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-alorica-blue text-alorica-blue hover:bg-alorica-light transition-colors flex items-center gap-1"
+                                >
+                                    <Icon name="shuffle" size={14} /> Auto-assign buses
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 max-w-4xl mx-auto">
+                        <button
+                            type="button"
+                            onClick={onSaveExcel}
+                            className="bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
+                        >
+                            <Icon name="save" size={20} /> Save Excel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onShare}
+                            disabled={sharing}
+                            className={`bg-alorica-orange hover:shadow-2xl text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all ${sharing ? 'opacity-70 cursor-wait' : ''}`}
+                        >
+                            <Icon name="share-2" size={20} /> {sharing ? 'Sharing...' : 'Share'}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onPrint}
+                            className="bg-white border-2 border-alorica-blue text-alorica-blue font-bold py-4 px-4 rounded-xl shadow hover:bg-alorica-light flex items-center justify-center gap-2 transition-all"
+                        >
+                            <Icon name="printer" size={20} /> Print
+                        </button>
+                    </div>
+
+                    <div className="flex flex-wrap justify-center gap-2 mb-4">
+                        <a
+                            href={`https://wa.me/?text=${encodeURIComponent(summaryText())}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs font-semibold px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors flex items-center gap-1"
+                        >
+                            <Icon name="message-circle" size={14} /> WhatsApp summary
+                        </a>
+                        <a
+                            href={`https://t.me/share/url?url=${encodeURIComponent('https://github.com/mhgd74/Alorica')}&text=${encodeURIComponent(summaryText())}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs font-semibold px-3 py-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors flex items-center gap-1"
+                        >
+                            <Icon name="send" size={14} /> Telegram summary
+                        </a>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                navigator.clipboard.writeText(summaryText())
+                                    .then(() => pushToast('Summary copied to clipboard.', 'success'))
+                                    .catch(() => pushToast('Could not access the clipboard.', 'error'));
+                            }}
+                            className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors flex items-center gap-1"
+                        >
+                            <Icon name="clipboard-copy" size={14} /> Copy summary
+                        </button>
+                    </div>
+
+                    <p className="text-center text-xs text-gray-400 mb-8">
+                        The Excel file contains a Summary sheet plus one sheet per day with employee name, ID, booking time, pickup point, type and assigned bus.
+                    </p>
+
+                    {filteredBookings.length === 0 ? (
+                        <p className="text-center text-gray-400 py-12">
+                            {bookings.length === 0 ? 'No bookings yet. Employee bookings will appear here.' : 'No bookings match the current filters.'}
+                        </p>
+                    ) : (
+                        <div className="space-y-8">
+                            {dayGroups.map(({ day, items }) => (
+                                <div key={day} className="border border-gray-100 rounded-2xl overflow-hidden">
+                                    <div className="bg-alorica-blue text-white px-4 py-3 flex justify-between items-center">
+                                        <span className="font-bold">{day}</span>
+                                        <span className="text-xs opacity-80">{items.length} booking{items.length === 1 ? '' : 's'}</span>
+                                    </div>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-sm min-w-[820px]">
+                                            <thead className="bg-alorica-light text-alorica-blue">
+                                                <tr>
+                                                    <th className="text-left px-3 py-2 font-semibold">Employee Name</th>
+                                                    <th className="text-left px-3 py-2 font-semibold">ID</th>
+                                                    <th className="text-left px-3 py-2 font-semibold">Time</th>
+                                                    <th className="text-left px-3 py-2 font-semibold">Pickup Point</th>
+                                                    <th className="text-left px-3 py-2 font-semibold">Type</th>
+                                                    <th className="text-left px-3 py-2 font-semibold">Bus</th>
+                                                    <th className="text-center px-3 py-2 font-semibold">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {items.map((b) => (
+                                                    <tr key={b.id} className="border-t border-gray-100">
+                                                        <td className="px-3 py-2 text-gray-800">{b.employeeName}</td>
+                                                        <td className="px-3 py-2 text-gray-600">{b.employeeId}</td>
+                                                        <td className="px-3 py-2 text-gray-600">{formatTime12h(b.time)}</td>
+                                                        <td className="px-3 py-2 text-gray-600">{b.location}</td>
+                                                        <td className="px-3 py-2">
+                                                            <span className={`text-xs font-semibold px-2 py-1 rounded-full ${b.type === 'Arrival' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-alorica-orange'}`}>
+                                                                {b.type}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-3 py-2">
+                                                            <select
+                                                                value={b.bus || WAITLIST}
+                                                                onChange={(e) => onSetBus(b.id, e.target.value)}
+                                                                className={`text-xs font-semibold rounded-lg px-2 py-1 border outline-none ${b.bus === WAITLIST ? 'border-red-200 text-red-600 bg-red-50' : 'border-gray-200 text-alorica-blue bg-white'}`}
+                                                            >
+                                                                {busNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                                                                <option value={WAITLIST}>{WAITLIST}</option>
+                                                            </select>
+                                                        </td>
+                                                        <td className="px-3 py-2 text-center">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => onDeleteBooking(b.id)}
+                                                                className="p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
+                                                                title="Delete booking"
+                                                            >
+                                                                <Icon name="trash-2" size={16} />
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    </>
+                )}
+
+                {/* ================= BUSES ================= */}
+                {adminView === 'buses' && (
+                    <div className="max-w-4xl mx-auto">
+                        <div className="bg-alorica-light rounded-2xl p-6 mb-8">
+                            <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-4">
+                                <Icon name="bus" size={20} className="text-alorica-orange" /> Add a Bus
+                            </h3>
+                            <form onSubmit={onAddBus} className="space-y-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div className="sm:col-span-2">
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">Bus name</label>
+                                        <input
+                                            required
+                                            placeholder="e.g. Bus 4"
+                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                            value={newBus.name}
+                                            onChange={(e) => { setBusFeedback({ type: '', text: '' }); setNewBus({ ...newBus, name: e.target.value }); }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">Seats (per day)</label>
+                                        <input
+                                            required
+                                            type="number"
+                                            min="1"
+                                            placeholder="e.g. 14"
+                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                            value={newBus.capacity}
+                                            onChange={(e) => { setBusFeedback({ type: '', text: '' }); setNewBus({ ...newBus, capacity: e.target.value }); }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {busFeedback.text && (
+                                    <p className={`text-sm font-medium rounded-xl px-4 py-3 border fade-in ${
+                                        busFeedback.type === 'error'
+                                            ? 'bg-red-50 text-red-600 border-red-100'
+                                            : 'bg-green-50 text-green-700 border-green-100'
+                                    }`}>
+                                        {busFeedback.text}
+                                    </p>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <Icon name="plus" size={20} /> Add Bus
+                                </button>
+                            </form>
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                            <h3 className="text-alorica-blue font-bold text-lg">Fleet ({buses.length} buses)</h3>
+                            <button
+                                type="button"
+                                onClick={onRedistribute}
+                                className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-alorica-blue text-alorica-blue hover:bg-alorica-light transition-colors flex items-center gap-1"
+                            >
+                                <Icon name="shuffle" size={14} /> Auto-assign buses
+                            </button>
+                        </div>
+
+                        <div className="border border-gray-100 rounded-2xl overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead className="bg-alorica-light text-alorica-blue">
+                                        <tr>
+                                            <th className="text-left px-4 py-2 font-semibold">Bus</th>
+                                            <th className="text-left px-4 py-2 font-semibold">Seats / day</th>
+                                            <th className="text-left px-4 py-2 font-semibold">Assigned (all bookings)</th>
+                                            <th className="text-center px-4 py-2 font-semibold">Remove</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {buses.length === 0 && (
+                                            <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400">No buses yet. Add one above.</td></tr>
+                                        )}
+                                        {buses.map((bus) => (
+                                            <tr key={bus.id} className="border-t border-gray-100">
+                                                <td className="px-4 py-2 text-gray-800 font-semibold">{bus.name}</td>
+                                                <td className="px-4 py-2">
+                                                    <input
+                                                        type="number"
+                                                        min="1"
+                                                        defaultValue={bus.capacity}
+                                                        onBlur={(e) => onUpdateCapacity(bus.id, e.target.value)}
+                                                        className="w-24 px-3 py-2 border-2 border-gray-100 rounded-lg outline-none bg-white text-sm"
+                                                    />
+                                                </td>
+                                                <td className="px-4 py-2 text-gray-600">{busUsage[bus.name] || 0}</td>
+                                                <td className="px-4 py-2 text-center">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => onDeleteBus(bus.id)}
+                                                        className="p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
+                                                        title="Remove bus"
+                                                    >
+                                                        <Icon name="trash-2" size={16} />
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                                <p className="text-2xl font-black text-alorica-blue">{buses.reduce((sum, b) => sum + b.capacity, 0)}</p>
+                                <p className="text-xs text-gray-500 mt-1">Total seats per day</p>
+                            </div>
+                            <div className="bg-alorica-light rounded-2xl p-4 text-center">
+                                <p className={`text-2xl font-black ${waitlistCount ? 'text-red-600' : 'text-alorica-blue'}`}>{waitlistCount}</p>
+                                <p className="text-xs text-gray-500 mt-1">Bookings on waitlist</p>
+                            </div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-4 text-center">
+                            Capacity is applied per day. Bookings that do not fit any bus are placed on the waitlist and flagged in red.
+                        </p>
+                    </div>
+                )}
+
+                {/* ================= USERS ================= */}
+                {adminView === 'users' && (
+                    <div className="max-w-3xl mx-auto">
+                        <div className="bg-alorica-light rounded-2xl p-6 mb-8">
+                            <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-4">
+                                <Icon name="user-plus" size={20} className="text-alorica-orange" /> Create New User
+                            </h3>
+                            <form onSubmit={onCreateUser} className="space-y-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
+                                        <input
+                                            required
+                                            placeholder="e.g. Sara Mahmoud"
+                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                            value={newUser.name}
+                                            onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, name: e.target.value }); }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">Username</label>
+                                        <input
+                                            required
+                                            placeholder="e.g. sara"
+                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                            value={newUser.username}
+                                            onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, username: e.target.value }); }}
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-semibold text-gray-600 mb-1">Password</label>
+                                        <input
+                                            required
+                                            placeholder="e.g. sara123"
+                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
+                                            value={newUser.password}
+                                            onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, password: e.target.value }); }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {userFeedback.text && (
+                                    <p className={`text-sm font-medium rounded-xl px-4 py-3 border fade-in ${
+                                        userFeedback.type === 'error'
+                                            ? 'bg-red-50 text-red-600 border-red-100'
+                                            : 'bg-green-50 text-green-700 border-green-100'
+                                    }`}>
+                                        {userFeedback.text}
+                                    </p>
+                                )}
+
+                                <button
+                                    type="submit"
+                                    className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <Icon name="user-plus" size={20} /> Create User
+                                </button>
+                            </form>
+                        </div>
+
+                        <h3 className="text-alorica-blue font-bold text-lg mb-3">Existing Users ({allUsers.length})</h3>
+                        <div className="border border-gray-100 rounded-2xl overflow-hidden">
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-sm">
+                                    <thead className="bg-alorica-light text-alorica-blue">
+                                        <tr>
+                                            <th className="text-left px-4 py-2 font-semibold">Full Name</th>
+                                            <th className="text-left px-4 py-2 font-semibold">Username</th>
+                                            <th className="text-left px-4 py-2 font-semibold">Role</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {allUsers.map((u) => (
+                                            <tr key={u.username} className="border-t border-gray-100">
+                                                <td className="px-4 py-2 text-gray-800">{u.name}</td>
+                                                <td className="px-4 py-2 text-gray-600">{u.username}</td>
+                                                <td className="px-4 py-2">
+                                                    <span className={`text-xs font-semibold px-2 py-1 rounded-full ${u.username === 'admin' ? 'bg-alorica-light text-alorica-blue' : 'bg-gray-100 text-gray-600'}`}>
+                                                        {u.username === 'admin' ? 'Admin' : 'User'}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <p className="text-xs text-gray-400 mt-4 text-center">
+                            New users are created with a regular (non-admin) role and are saved in this browser.
+                        </p>
+
+                        <div className="mt-10 bg-gray-50 border border-gray-100 rounded-2xl p-6">
+                            <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-2">
+                                <Icon name="database" size={20} className="text-alorica-orange" /> Data Backup &amp; Restore
+                            </h3>
+                            <p className="text-xs text-gray-500 mb-4">
+                                Download a JSON file with all bookings, buses and user accounts — or restore a previous backup.
+                            </p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <button
+                                    type="button"
+                                    onClick={onExportBackup}
+                                    className="bg-white border-2 border-alorica-blue text-alorica-blue font-bold py-3 px-4 rounded-xl hover:bg-alorica-light flex items-center justify-center gap-2 transition-all"
+                                >
+                                    <Icon name="download" size={18} /> Export backup
+                                </button>
+                                <label className={`bg-white border-2 border-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl cursor-pointer hover:bg-gray-100 flex items-center justify-center gap-2 transition-all ${importing ? 'opacity-70 cursor-wait' : ''}`}>
+                                    <Icon name="upload" size={18} /> {importing ? 'Restoring...' : 'Restore backup'}
+                                    <input
+                                        type="file"
+                                        accept="application/json,.json"
+                                        className="hidden"
+                                        onChange={(e) => {
+                                            const file = e.target.files && e.target.files[0];
+                                            e.target.value = '';
+                                            if (!file) return;
+                                            setImporting(true);
+                                            onImportBackup(file);
+                                        }}
+                                    />
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                </div>
+            </div>
+        );
+
         const App = () => {
             /* ------------------ state ------------------ */
             const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -499,7 +1358,6 @@
             const [error, setError] = useState('');
             const [locating, setLocating] = useState(false);
             const [activeTab, setActiveTab] = useState('arrival');
-            const [now, setNow] = useState(new Date());
             const [bookings, setBookings] = useState(() => loadJSON(STORAGE.bookings, []));
             const [customUsers, setCustomUsers] = useState(() => loadJSON(STORAGE.users, []));
             const [buses, setBuses] = useState(() => loadJSON(STORAGE.buses, DEFAULT_BUSES));
@@ -516,17 +1374,11 @@
 
             const [formData, setFormData] = useState({
                 dropOffLocation: '',
-                timeZone: '',
                 time: '',
                 date: todayISO()
             });
 
             /* ------------------ effects ------------------ */
-            useEffect(() => {
-                const timer = setInterval(() => setNow(new Date()), 1000);
-                return () => clearInterval(timer);
-            }, []);
-
             useEffect(() => { saveJSON(STORAGE.bookings, bookings); }, [bookings]);
             useEffect(() => { saveJSON(STORAGE.users, customUsers); }, [customUsers]);
             useEffect(() => { saveJSON(STORAGE.buses, buses); }, [buses]);
@@ -571,8 +1423,13 @@
                 const employeeName = (currentUser.name || '').trim();
                 const employeeId = currentUser.username;
                 const type = activeTab === 'arrival' ? 'Arrival' : 'Departure';
-                const time = formData.time || `${clock.hh}:${clock.mm}`;
+                const time = formData.time;
                 const date = formData.date;
+
+                if (!time) {
+                    pushToast('Please select a time.', 'error');
+                    return;
+                }
 
                 if (date < todayISO()) {
                     pushToast('The booking date cannot be in the past.', 'error');
@@ -593,7 +1450,6 @@
                     employeeId,
                     type,
                     location: formData.dropOffLocation.trim(),
-                    timeZone: formData.timeZone,
                     time,
                     date,
                     createdBy: currentUser.username,
@@ -880,15 +1736,9 @@
             };
 
             /* ------------------ derived ------------------ */
-            const clock = formatClock(now, getOffsetHours(formData.timeZone));
             const dropOffLabel = activeTab === 'arrival' ? 'Pickup location' : 'Drop off location';
             const dropOffIcon = activeTab === 'arrival' ? 'map-pin' : 'navigation';
             const timeLabel = activeTab === 'arrival' ? 'Pickup time' : 'Drop-off time';
-            const timeParts = formData.time ? formData.time.split(':') : [clock.hh, clock.mm];
-            const selHour = timeParts[0];
-            const selMinute = timeParts[1];
-            const displayTime = formData.time || `${clock.hh}:${clock.mm}`;
-            const [displayHh, displayMm] = displayTime.split(':');
 
             const isAdmin = currentUser && currentUser.username === 'admin';
             const filtersActive = Boolean(filters.q || filters.from || filters.to);
@@ -901,68 +1751,13 @@
             /* ------------------ login screen ------------------ */
             if (!isLoggedIn) {
                 return (
-                    <>
-                        <Toasts toasts={toasts} />
-                        <div className="min-h-screen flex items-center justify-center p-4">
-                            <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-gray-100 fade-in">
-                                <div className="flex flex-col items-center mb-8">
-                                    <img src="logo.png" alt="Alorica" className="h-12 mb-4" />
-                                    <h1 className="text-2xl font-bold text-alorica-blue">Login</h1>
-                                    <p className="text-gray-500 text-sm mt-2 text-center">Alorica Booking System</p>
-                                </div>
-
-                                <form onSubmit={handleLogin} className="space-y-6">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
-                                        <div className="relative">
-                                            <input
-                                                type="text"
-                                                required
-                                                autoComplete="username"
-                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg outline-none transition-all text-gray-800 pl-10"
-                                                placeholder="Enter your username"
-                                                value={loginData.username}
-                                                onChange={(e) => setLoginData({ ...loginData, username: e.target.value })}
-                                            />
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                                                <Icon name="user" size={18} />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-                                        <div className="relative">
-                                            <input
-                                                type="password"
-                                                required
-                                                autoComplete="current-password"
-                                                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg outline-none transition-all text-gray-800 pl-10"
-                                                placeholder="Enter your password"
-                                                value={loginData.password}
-                                                onChange={(e) => setLoginData({ ...loginData, password: e.target.value })}
-                                            />
-                                            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                                                <Icon name="lock" size={18} />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {error && (
-                                        <p className="text-red-500 text-sm text-center font-medium bg-red-50 py-2 rounded-lg">{error}</p>
-                                    )}
-
-                                    <button
-                                        type="submit"
-                                        className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-3 px-4 rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all"
-                                    >
-                                        Login
-                                        <Icon name="chevron-right" size={20} />
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-                    </>
+                    <Login
+                        toasts={toasts}
+                        loginData={loginData}
+                        setLoginData={setLoginData}
+                        error={error}
+                        onSubmit={handleLogin}
+                    />
                 );
             }
 
@@ -999,729 +1794,66 @@
 
                     <main className={`${isAdmin ? 'max-w-6xl' : 'max-w-4xl'} mx-auto p-4 sm:p-6 mt-6 sm:mt-8 fade-in`}>
                         {isAdmin ? (
-                        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden border border-white">
-                            <div className="bg-alorica-blue p-6 sm:p-8 text-white text-center">
-                                <h2 className="text-2xl sm:text-3xl font-bold mb-2">Admin Dashboard</h2>
-                                <p className="opacity-80">Manage employee bookings, the bus fleet and user accounts</p>
-                            </div>
-
-                            <div className="flex flex-wrap justify-center gap-3 pt-6 px-4">
-                                {adminTabs.map((tab) => (
-                                    <button
-                                        key={tab.key}
-                                        type="button"
-                                        onClick={() => setAdminView(tab.key)}
-                                        className={`flex items-center gap-2 px-5 sm:px-8 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
-                                            adminView === tab.key
-                                                ? 'bg-alorica-orange text-white shadow-lg scale-105'
-                                                : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
-                                        }`}
-                                    >
-                                        <Icon name={tab.icon} size={18} /> {tab.label}
-                                    </button>
-                                ))}
-                            </div>
-
-                            <div className="p-4 sm:p-8">
-
-                            {/* ================= BOOKINGS ================= */}
-                            {adminView === 'bookings' && (
-                                <>
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8 max-w-4xl mx-auto">
-                                    <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                        <p className="text-3xl font-black text-alorica-blue">{filteredBookings.length}</p>
-                                        <p className="text-xs text-gray-500 mt-1">Bookings</p>
-                                    </div>
-                                    <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                        <p className="text-3xl font-black text-alorica-blue">{dayGroups.length}</p>
-                                        <p className="text-xs text-gray-500 mt-1">Days</p>
-                                    </div>
-                                    <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                        <p className="text-3xl font-black text-alorica-blue">{uniqueEmployeeCount(filteredBookings)}</p>
-                                        <p className="text-xs text-gray-500 mt-1">Employees</p>
-                                    </div>
-                                    <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                        <p className={`text-3xl font-black ${waitlistCount ? 'text-red-600' : 'text-alorica-blue'}`}>{waitlistCount}</p>
-                                        <p className="text-xs text-gray-500 mt-1">On waitlist</p>
-                                    </div>
-                                </div>
-
-                                {/* Filters */}
-                                <div className="max-w-4xl mx-auto mb-6 bg-gray-50 border border-gray-100 rounded-2xl p-4">
-                                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                                        <div className="sm:col-span-2">
-                                            <label className="block text-xs font-semibold text-gray-600 mb-1">Search</label>
-                                            <div className="relative">
-                                                <input
-                                                    className="w-full px-4 py-3 pl-10 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                    placeholder="Name, ID, point, bus..."
-                                                    value={filters.q}
-                                                    onChange={(e) => setFilters({ ...filters, q: e.target.value })}
-                                                />
-                                                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
-                                                    <Icon name="search" size={16} />
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-gray-600 mb-1">From date</label>
-                                            <input
-                                                type="date"
-                                                className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                value={filters.from}
-                                                onChange={(e) => setFilters({ ...filters, from: e.target.value })}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-semibold text-gray-600 mb-1">To date</label>
-                                            <input
-                                                type="date"
-                                                className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                value={filters.to}
-                                                onChange={(e) => setFilters({ ...filters, to: e.target.value })}
-                                            />
-                                        </div>
-                                    </div>
-                                    <div className="flex flex-wrap items-center justify-between gap-3 mt-3">
-                                        <p className="text-xs text-gray-500">
-                                            Showing <span className="font-bold text-alorica-blue">{filteredBookings.length}</span> of {bookings.length} bookings{filtersActive ? ' (filters applied)' : ''}. Exports use this selection.
-                                        </p>
-                                        <div className="flex gap-2">
-                                            {filtersActive && (
-                                                <button
-                                                    type="button"
-                                                    onClick={resetFilters}
-                                                    className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors"
-                                                >
-                                                    Clear filters
-                                                </button>
-                                            )}
-                                            <button
-                                                type="button"
-                                                onClick={handleRedistribute}
-                                                className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-alorica-blue text-alorica-blue hover:bg-alorica-light transition-colors flex items-center gap-1"
-                                            >
-                                                <Icon name="shuffle" size={14} /> Auto-assign buses
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 max-w-4xl mx-auto">
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveExcel}
-                                        className="bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
-                                    >
-                                        <Icon name="save" size={20} /> Save Excel
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleShare}
-                                        disabled={sharing}
-                                        className={`bg-alorica-orange hover:shadow-2xl text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all ${sharing ? 'opacity-70 cursor-wait' : ''}`}
-                                    >
-                                        <Icon name="share-2" size={20} /> {sharing ? 'Sharing...' : 'Share'}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handlePrint}
-                                        className="bg-white border-2 border-alorica-blue text-alorica-blue font-bold py-4 px-4 rounded-xl shadow hover:bg-alorica-light flex items-center justify-center gap-2 transition-all"
-                                    >
-                                        <Icon name="printer" size={20} /> Print
-                                    </button>
-                                </div>
-
-                                <div className="flex flex-wrap justify-center gap-2 mb-4">
-                                    <a
-                                        href={`https://wa.me/?text=${encodeURIComponent(shareSummaryText())}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs font-semibold px-3 py-2 rounded-lg bg-green-50 text-green-700 border border-green-200 hover:bg-green-100 transition-colors flex items-center gap-1"
-                                    >
-                                        <Icon name="message-circle" size={14} /> WhatsApp summary
-                                    </a>
-                                    <a
-                                        href={`https://t.me/share/url?url=${encodeURIComponent('https://github.com/mhgd74/Alorica')}&text=${encodeURIComponent(shareSummaryText())}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs font-semibold px-3 py-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors flex items-center gap-1"
-                                    >
-                                        <Icon name="send" size={14} /> Telegram summary
-                                    </a>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            navigator.clipboard.writeText(shareSummaryText())
-                                                .then(() => pushToast('Summary copied to clipboard.', 'success'))
-                                                .catch(() => pushToast('Could not access the clipboard.', 'error'));
-                                        }}
-                                        className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors flex items-center gap-1"
-                                    >
-                                        <Icon name="clipboard-copy" size={14} /> Copy summary
-                                    </button>
-                                </div>
-
-                                <p className="text-center text-xs text-gray-400 mb-8">
-                                    The Excel file contains a Summary sheet plus one sheet per day with employee name, ID, booking time, pickup point, type and assigned bus.
-                                </p>
-
-                                {filteredBookings.length === 0 ? (
-                                    <p className="text-center text-gray-400 py-12">
-                                        {bookings.length === 0 ? 'No bookings yet. Employee bookings will appear here.' : 'No bookings match the current filters.'}
-                                    </p>
-                                ) : (
-                                    <div className="space-y-8">
-                                        {dayGroups.map(({ day, items }) => (
-                                            <div key={day} className="border border-gray-100 rounded-2xl overflow-hidden">
-                                                <div className="bg-alorica-blue text-white px-4 py-3 flex justify-between items-center">
-                                                    <span className="font-bold">{day}</span>
-                                                    <span className="text-xs opacity-80">{items.length} booking{items.length === 1 ? '' : 's'}</span>
-                                                </div>
-                                                <div className="overflow-x-auto">
-                                                    <table className="w-full text-sm min-w-[820px]">
-                                                        <thead className="bg-alorica-light text-alorica-blue">
-                                                            <tr>
-                                                                <th className="text-left px-3 py-2 font-semibold">Employee Name</th>
-                                                                <th className="text-left px-3 py-2 font-semibold">ID</th>
-                                                                <th className="text-left px-3 py-2 font-semibold">Time</th>
-                                                                <th className="text-left px-3 py-2 font-semibold">Pickup Point</th>
-                                                                <th className="text-left px-3 py-2 font-semibold">Type</th>
-                                                                <th className="text-left px-3 py-2 font-semibold">Bus</th>
-                                                                <th className="text-center px-3 py-2 font-semibold">Actions</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody>
-                                                            {items.map((b) => (
-                                                                <tr key={b.id} className="border-t border-gray-100">
-                                                                    <td className="px-3 py-2 text-gray-800">{b.employeeName}</td>
-                                                                    <td className="px-3 py-2 text-gray-600">{b.employeeId}</td>
-                                                                    <td className="px-3 py-2 text-gray-600">{b.time}</td>
-                                                                    <td className="px-3 py-2 text-gray-600">{b.location}</td>
-                                                                    <td className="px-3 py-2">
-                                                                        <span className={`text-xs font-semibold px-2 py-1 rounded-full ${b.type === 'Arrival' ? 'bg-green-50 text-green-700' : 'bg-orange-50 text-alorica-orange'}`}>
-                                                                            {b.type}
-                                                                        </span>
-                                                                    </td>
-                                                                    <td className="px-3 py-2">
-                                                                        <select
-                                                                            value={b.bus || WAITLIST}
-                                                                            onChange={(e) => handleSetBus(b.id, e.target.value)}
-                                                                            className={`text-xs font-semibold rounded-lg px-2 py-1 border outline-none ${b.bus === WAITLIST ? 'border-red-200 text-red-600 bg-red-50' : 'border-gray-200 text-alorica-blue bg-white'}`}
-                                                                        >
-                                                                            {busNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                                                                            <option value={WAITLIST}>{WAITLIST}</option>
-                                                                        </select>
-                                                                    </td>
-                                                                    <td className="px-3 py-2 text-center">
-                                                                        <button
-                                                                            type="button"
-                                                                            onClick={() => handleDeleteBooking(b.id)}
-                                                                            className="p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
-                                                                            title="Delete booking"
-                                                                        >
-                                                                            <Icon name="trash-2" size={16} />
-                                                                        </button>
-                                                                    </td>
-                                                                </tr>
-                                                            ))}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                                </>
-                            )}
-
-                            {/* ================= BUSES ================= */}
-                            {adminView === 'buses' && (
-                                <div className="max-w-4xl mx-auto">
-                                    <div className="bg-alorica-light rounded-2xl p-6 mb-8">
-                                        <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-4">
-                                            <Icon name="bus" size={20} className="text-alorica-orange" /> Add a Bus
-                                        </h3>
-                                        <form onSubmit={handleAddBus} className="space-y-4">
-                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                                <div className="sm:col-span-2">
-                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Bus name</label>
-                                                    <input
-                                                        required
-                                                        placeholder="e.g. Bus 4"
-                                                        className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                        value={newBus.name}
-                                                        onChange={(e) => { setBusFeedback({ type: '', text: '' }); setNewBus({ ...newBus, name: e.target.value }); }}
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Seats (per day)</label>
-                                                    <input
-                                                        required
-                                                        type="number"
-                                                        min="1"
-                                                        placeholder="e.g. 14"
-                                                        className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                        value={newBus.capacity}
-                                                        onChange={(e) => { setBusFeedback({ type: '', text: '' }); setNewBus({ ...newBus, capacity: e.target.value }); }}
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            {busFeedback.text && (
-                                                <p className={`text-sm font-medium rounded-xl px-4 py-3 border fade-in ${
-                                                    busFeedback.type === 'error'
-                                                        ? 'bg-red-50 text-red-600 border-red-100'
-                                                        : 'bg-green-50 text-green-700 border-green-100'
-                                                }`}>
-                                                    {busFeedback.text}
-                                                </p>
-                                            )}
-
-                                            <button
-                                                type="submit"
-                                                className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
-                                            >
-                                                <Icon name="plus" size={20} /> Add Bus
-                                            </button>
-                                        </form>
-                                    </div>
-
-                                    <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-                                        <h3 className="text-alorica-blue font-bold text-lg">Fleet ({buses.length} buses)</h3>
-                                        <button
-                                            type="button"
-                                            onClick={handleRedistribute}
-                                            className="text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-alorica-blue text-alorica-blue hover:bg-alorica-light transition-colors flex items-center gap-1"
-                                        >
-                                            <Icon name="shuffle" size={14} /> Auto-assign buses
-                                        </button>
-                                    </div>
-
-                                    <div className="border border-gray-100 rounded-2xl overflow-hidden">
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead className="bg-alorica-light text-alorica-blue">
-                                                    <tr>
-                                                        <th className="text-left px-4 py-2 font-semibold">Bus</th>
-                                                        <th className="text-left px-4 py-2 font-semibold">Seats / day</th>
-                                                        <th className="text-left px-4 py-2 font-semibold">Assigned (all bookings)</th>
-                                                        <th className="text-center px-4 py-2 font-semibold">Remove</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {buses.length === 0 && (
-                                                        <tr><td colSpan="4" className="px-4 py-6 text-center text-gray-400">No buses yet. Add one above.</td></tr>
-                                                    )}
-                                                    {buses.map((bus) => (
-                                                        <tr key={bus.id} className="border-t border-gray-100">
-                                                            <td className="px-4 py-2 text-gray-800 font-semibold">{bus.name}</td>
-                                                            <td className="px-4 py-2">
-                                                                <input
-                                                                    type="number"
-                                                                    min="1"
-                                                                    defaultValue={bus.capacity}
-                                                                    onBlur={(e) => handleUpdateCapacity(bus.id, e.target.value)}
-                                                                    className="w-24 px-3 py-2 border-2 border-gray-100 rounded-lg outline-none bg-white text-sm"
-                                                                />
-                                                            </td>
-                                                            <td className="px-4 py-2 text-gray-600">{busUsage[bus.name] || 0}</td>
-                                                            <td className="px-4 py-2 text-center">
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => handleDeleteBus(bus.id)}
-                                                                    className="p-2 rounded-lg text-red-500 hover:bg-red-50 transition-colors"
-                                                                    title="Remove bus"
-                                                                >
-                                                                    <Icon name="trash-2" size={16} />
-                                                                </button>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-
-                                    <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                            <p className="text-2xl font-black text-alorica-blue">{buses.reduce((sum, b) => sum + b.capacity, 0)}</p>
-                                            <p className="text-xs text-gray-500 mt-1">Total seats per day</p>
-                                        </div>
-                                        <div className="bg-alorica-light rounded-2xl p-4 text-center">
-                                            <p className={`text-2xl font-black ${waitlistCount ? 'text-red-600' : 'text-alorica-blue'}`}>{waitlistCount}</p>
-                                            <p className="text-xs text-gray-500 mt-1">Bookings on waitlist</p>
-                                        </div>
-                                    </div>
-                                    <p className="text-xs text-gray-400 mt-4 text-center">
-                                        Capacity is applied per day. Bookings that do not fit any bus are placed on the waitlist and flagged in red.
-                                    </p>
-                                </div>
-                            )}
-
-                            {/* ================= USERS ================= */}
-                            {adminView === 'users' && (
-                                <div className="max-w-3xl mx-auto">
-                                    <div className="bg-alorica-light rounded-2xl p-6 mb-8">
-                                        <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-4">
-                                            <Icon name="user-plus" size={20} className="text-alorica-orange" /> Create New User
-                                        </h3>
-                                        <form onSubmit={handleCreateUser} className="space-y-4">
-                                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                                                <div>
-                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Full Name</label>
-                                                    <input
-                                                        required
-                                                        placeholder="e.g. Sara Mahmoud"
-                                                        className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                        value={newUser.name}
-                                                        onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, name: e.target.value }); }}
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Username</label>
-                                                    <input
-                                                        required
-                                                        placeholder="e.g. sara"
-                                                        className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                        value={newUser.username}
-                                                        onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, username: e.target.value }); }}
-                                                    />
-                                                </div>
-                                                <div>
-                                                    <label className="block text-xs font-semibold text-gray-600 mb-1">Password</label>
-                                                    <input
-                                                        required
-                                                        placeholder="e.g. sara123"
-                                                        className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-sm"
-                                                        value={newUser.password}
-                                                        onChange={(e) => { setUserFeedback({ type: '', text: '' }); setNewUser({ ...newUser, password: e.target.value }); }}
-                                                    />
-                                                </div>
-                                            </div>
-
-                                            {userFeedback.text && (
-                                                <p className={`text-sm font-medium rounded-xl px-4 py-3 border fade-in ${
-                                                    userFeedback.type === 'error'
-                                                        ? 'bg-red-50 text-red-600 border-red-100'
-                                                        : 'bg-green-50 text-green-700 border-green-100'
-                                                }`}>
-                                                    {userFeedback.text}
-                                                </p>
-                                            )}
-
-                                            <button
-                                                type="submit"
-                                                className="w-full bg-alorica-blue hover:bg-opacity-90 text-white font-bold py-4 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all"
-                                            >
-                                                <Icon name="user-plus" size={20} /> Create User
-                                            </button>
-                                        </form>
-                                    </div>
-
-                                    <h3 className="text-alorica-blue font-bold text-lg mb-3">Existing Users ({allUsers.length})</h3>
-                                    <div className="border border-gray-100 rounded-2xl overflow-hidden">
-                                        <div className="overflow-x-auto">
-                                            <table className="w-full text-sm">
-                                                <thead className="bg-alorica-light text-alorica-blue">
-                                                    <tr>
-                                                        <th className="text-left px-4 py-2 font-semibold">Full Name</th>
-                                                        <th className="text-left px-4 py-2 font-semibold">Username</th>
-                                                        <th className="text-left px-4 py-2 font-semibold">Role</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {allUsers.map((u) => (
-                                                        <tr key={u.username} className="border-t border-gray-100">
-                                                            <td className="px-4 py-2 text-gray-800">{u.name}</td>
-                                                            <td className="px-4 py-2 text-gray-600">{u.username}</td>
-                                                            <td className="px-4 py-2">
-                                                                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${u.username === 'admin' ? 'bg-alorica-light text-alorica-blue' : 'bg-gray-100 text-gray-600'}`}>
-                                                                    {u.username === 'admin' ? 'Admin' : 'User'}
-                                                                </span>
-                                                            </td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </div>
-                                    <p className="text-xs text-gray-400 mt-4 text-center">
-                                        New users are created with a regular (non-admin) role and are saved in this browser.
-                                    </p>
-
-                                    <div className="mt-10 bg-gray-50 border border-gray-100 rounded-2xl p-6">
-                                        <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-lg mb-2">
-                                            <Icon name="database" size={20} className="text-alorica-orange" /> Data Backup &amp; Restore
-                                        </h3>
-                                        <p className="text-xs text-gray-500 mb-4">
-                                            Download a JSON file with all bookings, buses and user accounts — or restore a previous backup.
-                                        </p>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                            <button
-                                                type="button"
-                                                onClick={handleExportBackup}
-                                                className="bg-white border-2 border-alorica-blue text-alorica-blue font-bold py-3 px-4 rounded-xl hover:bg-alorica-light flex items-center justify-center gap-2 transition-all"
-                                            >
-                                                <Icon name="download" size={18} /> Export backup
-                                            </button>
-                                            <label className={`bg-white border-2 border-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl cursor-pointer hover:bg-gray-100 flex items-center justify-center gap-2 transition-all ${importing ? 'opacity-70 cursor-wait' : ''}`}>
-                                                <Icon name="upload" size={18} /> {importing ? 'Restoring...' : 'Restore backup'}
-                                                <input
-                                                    type="file"
-                                                    accept="application/json,.json"
-                                                    className="hidden"
-                                                    onChange={(e) => {
-                                                        const file = e.target.files && e.target.files[0];
-                                                        e.target.value = '';
-                                                        if (!file) return;
-                                                        setImporting(true);
-                                                        handleImportBackup(file);
-                                                    }}
-                                                />
-                                            </label>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            </div>
-                        </div>
+                        <AdminDashboard
+                            adminView={adminView}
+                            setAdminView={setAdminView}
+                            adminTabs={adminTabs}
+                            bookings={bookings}
+                            filteredBookings={filteredBookings}
+                            dayGroups={dayGroups}
+                            waitlistCount={waitlistCount}
+                            filters={filters}
+                            setFilters={setFilters}
+                            filtersActive={filtersActive}
+                            resetFilters={resetFilters}
+                            onRedistribute={handleRedistribute}
+                            onSaveExcel={handleSaveExcel}
+                            onShare={handleShare}
+                            onPrint={handlePrint}
+                            sharing={sharing}
+                            summaryText={shareSummaryText}
+                            pushToast={pushToast}
+                            busNames={busNames}
+                            onSetBus={handleSetBus}
+                            onDeleteBooking={handleDeleteBooking}
+                            buses={buses}
+                            newBus={newBus}
+                            setNewBus={setNewBus}
+                            busFeedback={busFeedback}
+                            setBusFeedback={setBusFeedback}
+                            onAddBus={handleAddBus}
+                            onDeleteBus={handleDeleteBus}
+                            onUpdateCapacity={handleUpdateCapacity}
+                            busUsage={busUsage}
+                            newUser={newUser}
+                            setNewUser={setNewUser}
+                            userFeedback={userFeedback}
+                            setUserFeedback={setUserFeedback}
+                            onCreateUser={handleCreateUser}
+                            allUsers={allUsers}
+                            importing={importing}
+                            setImporting={setImporting}
+                            onExportBackup={handleExportBackup}
+                            onImportBackup={handleImportBackup}
+                        />
                         ) : (
                         /* ================= REGULAR USER ================= */
                         <div className="bg-white rounded-3xl shadow-2xl overflow-hidden border border-white">
-                            <div className="bg-alorica-blue p-6 sm:p-8 text-white text-center">
-                                <h2 className="text-2xl sm:text-3xl font-bold mb-2">Transportation</h2>
-                                <p className="opacity-80">Select Arrival or Departure to complete your booking</p>
-                            </div>
-
-                            <div className="flex justify-center gap-3 sm:gap-4 pt-6 px-4">
-                                <button
-                                    type="button"
-                                    onClick={() => setActiveTab('arrival')}
-                                    className={`flex items-center gap-2 px-8 sm:px-12 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
-                                        activeTab === 'arrival'
-                                            ? 'bg-green-600 text-white shadow-lg scale-105'
-                                            : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
-                                    }`}
-                                >
-                                    <Icon name="bus" size={18} /> Arrival
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setActiveTab('departure')}
-                                    className={`flex items-center gap-2 px-8 sm:px-12 py-3 rounded-xl font-bold text-sm sm:text-base transition-all ${
-                                        activeTab === 'departure'
-                                            ? 'bg-red-600 text-white shadow-lg scale-105'
-                                            : 'bg-gray-100 text-alorica-blue hover:bg-alorica-light'
-                                    }`}
-                                >
-                                    <Icon name="bus" size={18} /> Departure
-                                </button>
-                            </div>
-
-                            <form key={activeTab} onSubmit={handleBooking} className="p-4 sm:p-8 fade-in">
-                                <div className="max-w-2xl mx-auto space-y-6">
-                                    <div>
-                                        <label className="flex flex-wrap items-center justify-between text-alorica-blue font-bold mb-2 gap-2">
-                                            <span className="flex items-center gap-2"><Icon name={dropOffIcon} size={18} className="text-alorica-orange" /> {dropOffLabel}</span>
-                                            <button
-                                                type="button"
-                                                onClick={() => getCurrentLocation('dropOffLocation')}
-                                                className="text-[10px] sm:text-xs bg-alorica-light text-alorica-blue px-2 py-1 rounded hover:bg-blue-100 transition-colors flex items-center gap-1 shrink-0"
-                                            >
-                                                <Icon name="locate" size={12} /> My Location
-                                            </button>
-                                        </label>
-
-                                        {/* Road Selection Buttons */}
-                                        <div className="grid grid-cols-3 sm:grid-cols-9 gap-2 mb-3">
-                                            {Object.keys(FIXED_LOCATIONS).map((road) => (
-                                                <button
-                                                    key={road}
-                                                    type="button"
-                                                    onClick={() => setSelectedRoad(road)}
-                                                    className={`py-2 text-xs font-bold rounded-lg border-2 transition-all ${
-                                                        selectedRoad === road
-                                                            ? 'bg-alorica-orange text-white border-alorica-orange'
-                                                            : 'bg-white text-alorica-blue border-gray-100 hover:border-alorica-light'
-                                                    }`}
-                                                >
-                                                    {road}
-                                                </button>
-                                            ))}
-                                        </div>
-
-                                        {/* Sub-location Selection (Visible only when a road is selected) */}
-                                        {selectedRoad && (
-                                            <div className="flex flex-wrap gap-2 mb-3 p-3 bg-gray-50 rounded-xl border-2 border-gray-100 max-h-48 overflow-y-auto">
-                                                {FIXED_LOCATIONS[selectedRoad].map((point) => (
-                                                    <button
-                                                        key={point}
-                                                        type="button"
-                                                        onClick={() => {
-                                                            setFormData({ ...formData, dropOffLocation: point });
-                                                            // Optional: clear selected road after picking a point
-                                                            // setSelectedRoad(null);
-                                                        }}
-                                                        className={`px-3 py-1.5 text-[11px] font-semibold rounded-full border transition-all ${
-                                                            formData.dropOffLocation === point
-                                                                ? 'bg-alorica-blue text-white border-alorica-blue'
-                                                                : 'bg-white text-gray-600 border-gray-200 hover:border-alorica-blue hover:text-alorica-blue'
-                                                        }`}
-                                                    >
-                                                        {point}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        )}
-
-                                        <input
-                                            list="fixed-locations"
-                                            required
-                                            placeholder={`Select or enter ${dropOffLabel.toLowerCase()}`}
-                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-gray-50 text-sm sm:text-base"
-                                            value={formData.dropOffLocation}
-                                            onChange={(e) => setFormData({ ...formData, dropOffLocation: e.target.value })}
-                                        />
-                                    </div>
-
-                                    <div>
-                                        <label className="flex items-center gap-2 text-alorica-blue font-bold mb-2">
-                                            <Icon name="clock" size={18} className="text-alorica-orange" /> {timeLabel}
-                                        </label>
-                                        <div className="rounded-xl border-2 border-gray-100 bg-gray-50 p-4">
-                                            <div className="flex items-center justify-center font-mono font-bold text-alorica-blue mb-1">
-                                                <span className="text-4xl sm:text-5xl">{displayHh}</span>
-                                                <span className="text-4xl sm:text-5xl text-alorica-orange animate-pulse mx-1">:</span>
-                                                <span className="text-4xl sm:text-5xl">{displayMm}</span>
-                                            </div>
-                                            <p className="text-center text-xs text-gray-400 mb-4">
-                                                {formData.time ? 'Selected time' : 'Current time — pick yours below'}
-                                            </p>
-                                            <div className="grid grid-cols-2 gap-3 mb-3">
-                                                <div>
-                                                    <span className="block text-xs font-semibold text-gray-500 mb-1 text-center">Hour</span>
-                                                    <select
-                                                        className="w-full px-3 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-center font-semibold"
-                                                        value={selHour}
-                                                        onChange={(e) => setFormData({ ...formData, time: `${e.target.value}:${selMinute}` })}
-                                                    >
-                                                        {HOURS.map((h) => <option key={h} value={h}>{h}</option>)}
-                                                    </select>
-                                                </div>
-                                                <div>
-                                                    <span className="block text-xs font-semibold text-gray-500 mb-1 text-center">Minute</span>
-                                                    <select
-                                                        className="w-full px-3 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white text-center font-semibold"
-                                                        value={selMinute}
-                                                        onChange={(e) => setFormData({ ...formData, time: `${selHour}:${e.target.value}` })}
-                                                    >
-                                                        {MINUTES.map((m) => <option key={m} value={m}>{m}</option>)}
-                                                    </select>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setFormData({ ...formData, time: `${clock.hh}:${clock.mm}` })}
-                                                    className="text-xs bg-alorica-light text-alorica-blue px-3 py-3 rounded-xl font-semibold hover:bg-blue-100 transition-colors whitespace-nowrap flex items-center gap-1 shrink-0"
-                                                >
-                                                    <Icon name="clock" size={14} /> Now
-                                                </button>
-                                                <select
-                                                    required
-                                                    className="flex-1 min-w-0 px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-white"
-                                                    value={formData.timeZone}
-                                                    onChange={(e) => setFormData({ ...formData, timeZone: e.target.value })}
-                                                >
-                                                    <option value="">Select timezone</option>
-                                                    {TIMEZONES.map((tz) => (
-                                                        <option key={tz.label} value={tz.value}>{tz.label}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="flex items-center gap-2 text-alorica-blue font-bold mb-2">
-                                            <Icon name="calendar" size={18} className="text-alorica-orange" /> Calendar
-                                        </label>
-                                        <input
-                                            type="date"
-                                            required
-                                            min={todayISO()}
-                                            className="w-full px-4 py-3 border-2 border-gray-100 rounded-xl outline-none bg-gray-50"
-                                            value={formData.date}
-                                            onChange={(e) => setFormData({ ...formData, date: e.target.value })}
-                                        />
-                                    </div>
-
-                                    <datalist id="fixed-locations">
-                                        {ALL_POINTS.map((loc, index) => (
-                                            <option key={index} value={loc} />
-                                        ))}
-                                    </datalist>
-
-                                    <div className="pt-2">
-                                        <button
-                                            type="submit"
-                                            disabled={locating}
-                                            className={`w-full bg-alorica-orange hover:shadow-2xl text-white font-black text-xl py-5 rounded-2xl shadow-xl transform active:scale-[0.98] transition-all flex items-center justify-center gap-3 group ${locating ? 'opacity-70 cursor-wait' : ''}`}
-                                        >
-                                            {locating ? 'Detecting Location...' : 'Book now'}
-                                            <Icon name="chevron-right" size={24} className="group-hover:translate-x-2 transition-transform" />
-                                        </button>
-                                    </div>
-                                </div>
-                            </form>
-
-                            {/* My Bookings Section for Regular User */}
-                            <div className="p-4 sm:p-8 border-t border-gray-100 bg-gray-50/50">
-                                <h3 className="flex items-center gap-2 text-alorica-blue font-bold text-xl mb-6">
-                                    <Icon name="calendar-check" size={24} className="text-alorica-orange" /> My Bookings
-                                </h3>
-
-                                {userBookings.length === 0 ? (
-                                    <div className="text-center py-10 bg-white rounded-2xl border-2 border-dashed border-gray-200">
-                                        <Icon name="calendar" size={48} className="mx-auto text-gray-300 mb-3" />
-                                        <p className="text-gray-500 font-medium">You have no bookings yet.</p>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-4">
-                                        {userBookings.map((b) => (
-                                            <div key={b.id} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex flex-wrap items-center justify-between gap-4">
-                                                <div className="flex items-center gap-4">
-                                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${b.type === 'Arrival' ? 'bg-green-100 text-green-600' : 'bg-red-100 text-red-600'}`}>
-                                                        <Icon name="bus" size={24} />
-                                                    </div>
-                                                    <div>
-                                                        <p className="font-bold text-alorica-blue">{b.date} at {b.time}</p>
-                                                        <p className="text-xs text-gray-500 flex items-center gap-1">
-                                                            <Icon name="map-pin" size={12} /> {b.location}
-                                                        </p>
-                                                    </div>
-                                                </div>
-                                                
-                                                <div className="flex items-center gap-6">
-                                                    <div className="text-right">
-                                                        <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Bus</p>
-                                                        <p className={`font-bold ${b.bus === 'Waitlist' ? 'text-red-600' : 'text-alorica-orange'}`}>{b.bus}</p>
-                                                    </div>
-                                                    <button
-                                                        onClick={() => handleDeleteBooking(b.id)}
-                                                        className="p-3 hover:bg-red-50 rounded-xl text-red-500 transition-colors border border-transparent hover:border-red-100"
-                                                        title="Delete booking"
-                                                    >
-                                                        <Icon name="trash-2" size={20} />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
+                            <BookingForm
+                                activeTab={activeTab}
+                                setActiveTab={setActiveTab}
+                                formData={formData}
+                                setFormData={setFormData}
+                                selectedRoad={selectedRoad}
+                                setSelectedRoad={setSelectedRoad}
+                                locating={locating}
+                                onLocate={getCurrentLocation}
+                                onSubmit={handleBooking}
+                                dropOffLabel={dropOffLabel}
+                                dropOffIcon={dropOffIcon}
+                                timeLabel={timeLabel}
+                            />
+                            <MyBookings bookings={userBookings} onDelete={handleDeleteBooking} />
                         </div>
                         )}
                     </main>
