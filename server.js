@@ -1,8 +1,15 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const PORT = 3000;
+// HTTPS is the primary entry point on 3000; plain HTTP listens on 3080.
+const PORT = 3080;
+const HTTPS_PORT = 3000;
+
+// Self-signed certificate for local HTTPS (see certs/).
+const KEY_FILE = path.join(__dirname, 'certs', 'server.key');
+const CERT_FILE = path.join(__dirname, 'certs', 'server.crt');
 
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -15,7 +22,7 @@ const MIME = {
     '.ico': 'image/x-icon',
 };
 
-const server = http.createServer((req, res) => {
+const handler = (req, res) => {
     let urlPath = decodeURIComponent(req.url.split('?')[0]);
     if (urlPath === '/') {
         res.writeHead(302, { Location: '/index.html', 'Cache-Control': 'no-store' });
@@ -56,8 +63,16 @@ const server = http.createServer((req, res) => {
         });
         res.end(data);
     });
+};
+
+http.createServer(handler).listen(PORT, () => {
+    console.log(`HTTP  server running at http://localhost:${PORT}`);
 });
 
-server.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-});
+if (fs.existsSync(KEY_FILE) && fs.existsSync(CERT_FILE)) {
+    https.createServer({ key: fs.readFileSync(KEY_FILE), cert: fs.readFileSync(CERT_FILE) }, handler).listen(HTTPS_PORT, () => {
+        console.log(`HTTPS server running at https://localhost:${HTTPS_PORT} (self-signed certificate)`);
+    });
+} else {
+    console.log(`HTTPS disabled — missing ${KEY_FILE} or ${CERT_FILE}`);
+}

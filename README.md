@@ -43,7 +43,7 @@
 
 ## التشغيل
 1. `node server.js`
-2. افتح: `http://localhost:3000`
+2. افتح: `https://localhost:3000` (شهادة موقّعة ذاتياً — اقبل تحذير المتصفح) أو `http://localhost:3080`
 
 > Geolocation ومشاركة الملفات تحتاج HTTP/HTTPS (لا تعمل عبر `file://`).
 
@@ -56,7 +56,8 @@ React 18 (UMD) · Babel Standalone · Tailwind CSS · Lucide · xlsx-js-style ·
 ## بنية الملفات
 ```
 index.html      # التطبيق كامل (React + Babel داخل المتصفح)
-server.js       # سيرفر محلي على المنفذ 3000
+server.js       # سيرفر محلي (HTTPS على المنفذ 3000، HTTP على 3080)
+certs/          # شهادة TLS موقّعة ذاتياً (لا تُرفع إلى Git)
 manifest.json   # بيانات PWA
 sw.js           # Service Worker للتخزين المؤقت
 logo.png        # شعار Alorica
